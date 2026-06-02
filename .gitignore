@@ -1,0 +1,11 @@
+node_modules/
+*.log
+.DS_Store
+
+# Internal development notes — kept only in the private workspace.
+NEWS_TAB_AUDIT.md
+
+# Track ONLY the built output (.millennium/Dist) so the plugin is installable
+# directly from this repo via the Millennium plugin database. Ignore the rest.
+.millennium/*
+!.millennium/Dist/
