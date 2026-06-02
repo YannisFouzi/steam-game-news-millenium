@@ -1295,13 +1295,38 @@ function sendHeartbeat(steamId: string): void {
   });
 }
 
+// Provisions the user's Game News account on first launch (idempotent). This is
+// what makes the feed non-empty for a brand-new install: the backend creates the
+// account and syncs the Steam library. No login screen — being inside the
+// signed-in Steam client is the identity proof (same trust as the other /web
+// calls). The backend replies 202 right away; the sync continues server-side, so
+// this returns fast. Re-issued every boot, so a transient failure self-heals.
+async function ensureRegistered(steamId: string): Promise<void> {
+  const res = await fetchBackend({ path: `/web/register/${steamId}` }).catch(
+    (): BackendProxyResult => ({ ok: false, error: 'fetch failed' }),
+  );
+  const ok =
+    res.ok &&
+    typeof res.status === 'number' &&
+    res.status >= 200 &&
+    res.status < 300;
+  navLog(
+    'ensureRegistered: ' +
+      (ok ? `ok (${res.status})` : `failed (${res.error ?? res.status})`),
+  );
+}
+
 function startNewsPolling(): void {
-  void getSteamId().then((payload) => {
+  void getSteamId().then(async (payload) => {
     if (!payload.steamId) {
       navLog('news poll: no steamId, skipping');
       return;
     }
     const steamId = payload.steamId;
+
+    // Create the account before anything reads it (idempotent; no-op for
+    // returning users). Awaited so the first reads don't race a missing user.
+    await ensureRegistered(steamId);
 
     // Heartbeat immediately + every 90s (independent of the 5-min news poll
     // so presence stays fresh within the backend's 4-min window).
