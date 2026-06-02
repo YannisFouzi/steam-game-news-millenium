@@ -1,6 +1,6 @@
 {
   "name": "game-news-millennium-plugin",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Native Millennium plugin for Game News (Steam Desktop).",
   "type": "module",
   "main": "./frontend/index.tsx",

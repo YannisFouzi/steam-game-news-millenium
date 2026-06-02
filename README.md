@@ -1,5 +1,7 @@
 # Game News — Millennium plugin
 
+<p align="center"><img src="thumbnail.png" width="96" height="96" alt="Game News icon"></p>
+
 A [Millennium](https://steambrew.app) plugin for the **Steam Desktop client** that
 adds a **NEWS** entry to the top navigation. Clicking it opens your personal
 **Game News** feed full-page inside Steam — the latest news for the games you
@@ -57,6 +59,13 @@ test.
 | `backend/main.lua` | Lua backend: reads SteamID, proxies HTTP |
 | `plugin.json` | Millennium plugin manifest |
 | `.millennium/Dist/` | Built output loaded by Millennium |
+
+## Privacy
+
+The plugin sends your public SteamID to the Game News backend to fetch your
+feed and manage follows. See the privacy policy:
+**https://gamenews.up.railway.app/privacy** (and the
+[terms](https://gamenews.up.railway.app/terms)).
 
 ## License
 
