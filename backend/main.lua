@@ -118,6 +118,54 @@ end
 
 local STEAM_ROOT = find_steam_root()
 
+-- ── Per-install pairing secret (privacy TOFU) ──────────────────────────────
+-- Le plugin prouve son identite via un secret par-installation (le token web
+-- Steam est inrecuperable). On le stocke en clair dans un fichier du dossier
+-- plugin, on l'envoie en header X-GN-Secret. Le backend ne voit qu'un hash.
+local SECRET_FILE = path_join(PLUGIN_DIR, "gn_pair_secret")
+
+local function generate_secret()
+    -- 40 hex chars. math.random n'est pas crypto mais suffit pour un secret
+    -- par-installation (non devinable a distance, jamais reutilise).
+    math.randomseed(os.time() + math.floor(os.clock() * 1000000))
+    for _ = 1, 16 do math.random() end -- warmup
+    local hex = ""
+    for _ = 1, 40 do
+        hex = hex .. string.format("%x", math.random(0, 15))
+    end
+    return hex
+end
+
+local function get_or_create_secret()
+    local f = io.open(SECRET_FILE, "r")
+    if f then
+        local s = f:read("*a")
+        f:close()
+        if s then
+            s = s:gsub("%s+", "")
+            if #s >= 16 then
+                return s
+            end
+        end
+    end
+    local secret = generate_secret()
+    local wf, werr = io.open(SECRET_FILE, "w")
+    if wf then
+        wf:write(secret)
+        wf:close()
+        logger:info("[GameNews] generated new pairing secret")
+    else
+        logger:warn("[GameNews] could not write secret file: " .. tostring(werr))
+    end
+    return secret
+end
+
+-- Callable exposee au frontend pour recuperer le secret (afin de l'injecter
+-- dans l'iframe du feed).
+function get_pair_secret()
+    return "{\"secret\":" .. json_string(get_or_create_secret()) .. "}"
+end
+
 -- ── Callable: fetch_backend ────────────────────────────────────────────────
 function fetch_backend(arg1)
     local path = type(arg1) == "table" and arg1.path or arg1
@@ -131,6 +179,17 @@ function fetch_backend(arg1)
 
     local url = BACKEND_BASE_URL .. path
     logger:info("[GameNews] GET " .. url)
+
+    -- Secret d'appairage : authentifie le plugin aupres des endpoints proteges.
+    -- Millennium v3.1.0 droppe les headers HTTP custom de http.get, donc on
+    -- passe le secret en QUERY param (le backend lit aussi req.query.secret).
+    -- Toujours ajoute (le callable IPC passe le path positionnellement, donc
+    -- arg1 est une string et non une table -> pas de drapeau par appel). Ajoute
+    -- APRES le log pour ne jamais ecrire le secret en clair dans les logs ; les
+    -- endpoints non proteges ignorent simplement le param.
+    local sep = url:find("?", 1, true) and "&" or "?"
+    url = url .. sep .. "secret=" .. get_or_create_secret()
+
     local response, err = http.get(url, {
         timeout = DEFAULT_TIMEOUT_SECONDS,
         headers = { ["Accept"] = "application/json" },

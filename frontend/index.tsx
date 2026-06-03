@@ -169,6 +169,26 @@ interface BackendProxyResult {
 const fetchBackendRaw = callable<[{ path: string }], string>('fetch_backend');
 const getSteamIdRaw = callable<[], string>('get_steam_id');
 const relayLogRaw = callable<[{ msg: string }], string>('relay_log');
+const getPairSecretRaw = callable<[], string>('get_pair_secret');
+
+// Per-install pairing secret (privacy). The Lua backend generates/persists it and
+// adds it as the X-GN-Secret header on every fetch_backend call (so the plugin's
+// own reads pass the gated endpoints). We also need it here to inject into the
+// feed iframe URL (#gn_secret=…) so the embedded SPA authenticates the same way.
+let cachedPairSecret: string | null = null;
+async function getPairSecret(): Promise<string> {
+  if (cachedPairSecret) {
+    return cachedPairSecret;
+  }
+  try {
+    const raw = await getPairSecretRaw();
+    const parsed = JSON.parse(raw) as { secret?: string };
+    cachedPairSecret = parsed.secret ?? '';
+  } catch {
+    cachedPairSecret = '';
+  }
+  return cachedPairSecret;
+}
 
 // Mirrors a message into the Lua log (Millennium → Logs) since JS console
 // output lands in the hard-to-reach CEF devtools console.
@@ -481,7 +501,22 @@ declare const SteamClient:
 // News. (Steam's CEF doesn't honour a raw <webview> tag from injected React.)
 function GameNewsFeedRoute() {
   const steam = useSteamId();
-  const url = steam.steamId ? FEED_URL_BASE + steam.steamId : null;
+  // Pass this install's pairing secret to the embedded SPA via the URL hash so
+  // its gated reads authenticate (the page is then private). Warmed at boot, so
+  // usually already cached; otherwise fetched on mount (one reload at worst).
+  const [secret, setSecret] = useState<string>(cachedPairSecret ?? '');
+  useEffect(() => {
+    if (!secret) {
+      void getPairSecret().then((s) => {
+        if (s) {
+          setSecret(s);
+        }
+      });
+    }
+  }, [secret]);
+  const url = steam.steamId
+    ? FEED_URL_BASE + steam.steamId + (secret ? '#gn_secret=' + encodeURIComponent(secret) : '')
+    : null;
   navLog(
     'GameNewsFeedRoute render: steamId=' +
       (steam.steamId ?? 'none') +
@@ -1316,6 +1351,21 @@ async function ensureRegistered(steamId: string): Promise<void> {
   );
 }
 
+// Registers this install's pairing secret on the backend (TOFU). The secret is
+// sent automatically as the X-GN-Secret header by the Lua proxy. After this, the
+// gated reads (profile/library/news) require the secret → the feed page is no
+// longer publicly viewable with just the SteamID URL. Idempotent, runs each boot.
+async function ensurePaired(steamId: string): Promise<void> {
+  await getPairSecret(); // warm the cache for the iframe injection
+  const res = await fetchBackend({ path: `/web/pair?steamId=${steamId}` }).catch(
+    (): BackendProxyResult => ({ ok: false, error: 'fetch failed' }),
+  );
+  navLog(
+    'ensurePaired: ' +
+      (res.ok && res.status === 200 ? 'ok' : `failed (${res.error ?? res.status})`),
+  );
+}
+
 function startNewsPolling(): void {
   void getSteamId().then(async (payload) => {
     if (!payload.steamId) {
@@ -1327,6 +1377,9 @@ function startNewsPolling(): void {
     // Create the account before anything reads it (idempotent; no-op for
     // returning users). Awaited so the first reads don't race a missing user.
     await ensureRegistered(steamId);
+    // Register this install's pairing secret so the gated reads accept us (and
+    // the feed page stops being publicly viewable). Before the first poll.
+    await ensurePaired(steamId);
 
     // Heartbeat immediately + every 90s (independent of the 5-min news poll
     // so presence stays fresh within the backend's 4-min window).
