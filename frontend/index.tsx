@@ -1098,6 +1098,12 @@ const NEWS_SEEN_KEY = 'gamenews_seen_news_ids';
 const NEWS_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const NEWS_MAX_TOASTS_PER_POLL = 5;
 const NEWS_MAX_SEEN = 500;
+// The follow-prompt "already prompted" set must remember the WHOLE library, not
+// a recent window: with the old 500 cap, a >500-game library overflowed the set,
+// so the overflow games were perpetually re-seen as "new" and re-prompted every
+// poll (notification spam). AppIds are tiny strings — a large cap is cheap and
+// covers any realistic Steam library.
+const PROMPTED_MAX = 20000;
 
 interface FeedItem {
   appId: string | number;
@@ -1255,7 +1261,7 @@ function savePrompted(seen: Set<string>): void {
   try {
     localStorage.setItem(
       PROMPTED_KEY,
-      JSON.stringify(Array.from(seen).slice(-NEWS_MAX_SEEN)),
+      JSON.stringify(Array.from(seen).slice(-PROMPTED_MAX)),
     );
   } catch {
     /* ignore */
