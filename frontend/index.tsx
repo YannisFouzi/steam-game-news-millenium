@@ -190,11 +190,22 @@ async function getPairSecret(): Promise<string> {
   return cachedPairSecret;
 }
 
-// Mirrors a message into the Lua log (Millennium → Logs) since JS console
-// output lands in the hard-to-reach CEF devtools console.
-function navLog(msg: string): void {
+// Verbose nav/styling diagnostics. Off for store releases; flip to true to
+// surface the full injection/styling/render trace in the Lua log when debugging.
+const NAV_DEBUG = false;
+
+// Always-on operational log (boot, pairing, polling, errors) → Lua log.
+function ilog(msg: string): void {
   console.log('[GameNews][nav]', msg);
   void relayLogRaw({ msg }).catch((): void => {});
+}
+
+// Verbose log, gated behind NAV_DEBUG. The HTTP calls themselves are already
+// logged by the Lua proxy, so this only carries DOM/styling noise.
+function navLog(msg: string): void {
+  if (NAV_DEBUG) {
+    ilog(msg);
+  }
 }
 
 interface SteamIdPayload {
@@ -1181,7 +1192,7 @@ async function pollNewsOnce(steamId: string): Promise<void> {
   // Even when toasts are off we still mark fresh items as seen, so re-enabling
   // the toggle later doesn't flood the user with everything accumulated since.
   const enabled = await isSteamNotifEnabled(steamId);
-  navLog(
+  ilog(
     `news poll: ${items.length} items, ${fresh.length} new, steamNotif=${enabled}`,
   );
 
@@ -1303,7 +1314,7 @@ async function pollFollowPrompts(steamId: string): Promise<void> {
 
   const fresh = candidates.filter((c) => !prompted.has(c.appId));
   const enabled = await isSteamNotifEnabled(steamId);
-  navLog(
+  ilog(
     `follow prompts: ${candidates.length} candidates, ${fresh.length} new, steamNotif=${enabled}`,
   );
 
@@ -1345,22 +1356,23 @@ async function ensureRegistered(steamId: string): Promise<void> {
     typeof res.status === 'number' &&
     res.status >= 200 &&
     res.status < 300;
-  navLog(
+  ilog(
     'ensureRegistered: ' +
       (ok ? `ok (${res.status})` : `failed (${res.error ?? res.status})`),
   );
 }
 
 // Registers this install's pairing secret on the backend (TOFU). The secret is
-// sent automatically as the X-GN-Secret header by the Lua proxy. After this, the
-// gated reads (profile/library/news) require the secret → the feed page is no
-// longer publicly viewable with just the SteamID URL. Idempotent, runs each boot.
+// sent automatically as a ?secret= query param by the Lua proxy (Millennium drops
+// custom http.get headers). After this, the gated reads (profile/library/news)
+// require the secret → the feed page is no longer publicly viewable with just the
+// SteamID URL. Idempotent, runs each boot.
 async function ensurePaired(steamId: string): Promise<void> {
   await getPairSecret(); // warm the cache for the iframe injection
   const res = await fetchBackend({ path: `/web/pair?steamId=${steamId}` }).catch(
     (): BackendProxyResult => ({ ok: false, error: 'fetch failed' }),
   );
-  navLog(
+  ilog(
     'ensurePaired: ' +
       (res.ok && res.status === 200 ? 'ok' : `failed (${res.error ?? res.status})`),
   );
