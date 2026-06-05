@@ -1129,12 +1129,6 @@ async function initHeaderInjection(): Promise<void> {
 
 const NEWS_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const NEWS_MAX_TOASTS_PER_POLL = 5;
-// The follow-prompt "already prompted" set must remember the WHOLE library, not
-// a recent window: with the old 500 cap, a >500-game library overflowed the set,
-// so the overflow games were perpetually re-seen as "new" and re-prompted every
-// poll (notification spam). AppIds are tiny strings — a large cap is cheap and
-// covers any realistic Steam library.
-const PROMPTED_MAX = 20000;
 
 interface FeedItem {
   appId: string | number;
@@ -1227,112 +1221,45 @@ async function pollNewsOnce(steamId: string): Promise<void> {
 }
 
 // ── Follow-prompt polling → clickable toasts ───────────────────────────────
-// Detects newly-detected, not-yet-followed games (library/family + wishlist)
-// when the matching follow mode is "prompt", and toasts a "click to follow"
-// notification. First run seeds silently (no flood of the existing backlog).
+// Server-authoritative: the backend (followPromptService) decides which
+// not-yet-followed games to prompt — cross-surface dedup (mobile + desktop) and
+// the one-time silent seed live there. The plugin keeps NO local prompted set;
+// it just renders what GET /web/follow-prompts returns.
 
-const PROMPTED_KEY = 'gamenews_prompted_ids';
-
-interface ProfileLite {
-  followedGames: Array<{ appId: string }>;
-  wishlist: Array<{ appId: string; name: string; header_image: string }>;
-  account: { libraryFollowMode: string; wishlistFollowMode: string };
-}
-interface LibraryLite {
-  appId: string;
-  name: string;
-  header_image: string;
-}
 interface PromptCandidate {
   appId: string;
   name: string;
   logoUrl: string;
 }
 
-function loadPrompted(): Set<string> {
-  try {
-    const raw = localStorage.getItem(PROMPTED_KEY);
-    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function savePrompted(seen: Set<string>): void {
-  try {
-    localStorage.setItem(
-      PROMPTED_KEY,
-      JSON.stringify(Array.from(seen).slice(-PROMPTED_MAX)),
-    );
-  } catch {
-    /* ignore */
-  }
-}
-
 async function pollFollowPrompts(steamId: string): Promise<void> {
-  const profRes = await fetchBackend({ path: `/web/profile/${steamId}` }).catch(
-    (): BackendProxyResult => ({ ok: false }),
-  );
-  if (!profRes.ok || profRes.status !== 200 || !profRes.body) {
+  const result = await fetchBackend({
+    path: `/web/follow-prompts/${steamId}`,
+  }).catch((): BackendProxyResult => ({ ok: false, error: 'fetch failed' }));
+
+  if (!result.ok || result.status !== 200 || !result.body) {
     return;
   }
-  let profile: ProfileLite;
+  let items: PromptCandidate[] = [];
   try {
-    profile = JSON.parse(profRes.body) as ProfileLite;
+    const data = JSON.parse(result.body) as { items?: PromptCandidate[] };
+    items = Array.isArray(data.items) ? data.items : [];
   } catch {
     return;
   }
-
-  const libRes = await fetchBackend({ path: `/web/library/${steamId}` }).catch(
-    (): BackendProxyResult => ({ ok: false }),
-  );
-  let library: LibraryLite[] = [];
-  if (libRes.ok && libRes.status === 200 && libRes.body) {
-    try {
-      library = JSON.parse(libRes.body) as LibraryLite[];
-    } catch {
-      /* keep empty */
-    }
-  }
-
-  const followed = new Set(profile.followedGames.map((g) => String(g.appId)));
-  const candidates: PromptCandidate[] = [];
-  const addCandidate = (appId: string, name: string, logoUrl: string) => {
-    if (!followed.has(appId) && !candidates.some((c) => c.appId === appId)) {
-      candidates.push({ appId, name, logoUrl });
-    }
-  };
-  if (profile.account.libraryFollowMode === 'prompt') {
-    library.forEach((g) => addCandidate(String(g.appId), g.name, g.header_image));
-  }
-  if (profile.account.wishlistFollowMode === 'prompt') {
-    profile.wishlist.forEach((g) =>
-      addCandidate(String(g.appId), g.name, g.header_image),
-    );
-  }
-
-  const prompted = loadPrompted();
-  if (prompted.size === 0) {
-    candidates.forEach((c) => prompted.add(c.appId));
-    savePrompted(prompted);
-    navLog(`follow prompts: seeded ${candidates.length} candidates (no toast)`);
+  if (items.length === 0) {
     return;
   }
 
-  const fresh = candidates.filter((c) => !prompted.has(c.appId));
   const enabled = await isSteamNotifEnabled(steamId);
-  ilog(
-    `follow prompts: ${candidates.length} candidates, ${fresh.length} new, steamNotif=${enabled}`,
-  );
-
-  if (enabled) {
-    fresh.slice(0, NEWS_MAX_TOASTS_PER_POLL).forEach((c) => {
-      showFollowPromptToast(steamId, c.appId, c.name, c.logoUrl);
-    });
+  ilog(`follow prompts: ${items.length} to toast, steamNotif=${enabled}`);
+  if (!enabled) {
+    return;
   }
 
-  fresh.forEach((c) => prompted.add(c.appId));
-  savePrompted(prompted);
+  items.slice(0, NEWS_MAX_TOASTS_PER_POLL).forEach((c) => {
+    showFollowPromptToast(steamId, c.appId, c.name, c.logoUrl);
+  });
 }
 
 const HEARTBEAT_INTERVAL_MS = 90 * 1000;
