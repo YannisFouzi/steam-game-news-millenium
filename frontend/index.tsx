@@ -613,6 +613,20 @@ function openFeed(steamId: string): void {
 function openArticleNative(url: string): void {
   // We're leaving the feed, so NEWS is no longer the active view.
   feedActive = false;
+  // NavigateToSteamWeb opens the article in-client (good) but clobbers the
+  // currently-active web tab's remembered URL in MainWindowBrowserManager
+  // .m_lastActiveTabURLs with the article URL. If "store" was the last active
+  // tab, clicking Magasin later re-opens the news (same for the profile tab).
+  // Fix: snapshot that per-tab URL memory, navigate, then restore every slot
+  // EXCEPT "community" (which legitimately now holds the article). m_rootTabURLs
+  // is untouched by the nav, so we leave it alone.
+  const mwbm = (
+    window as unknown as {
+      MainWindowBrowserManager?: { m_lastActiveTabURLs?: Record<string, string> };
+    }
+  ).MainWindowBrowserManager;
+  const prevTabURLs =
+    mwbm && mwbm.m_lastActiveTabURLs ? { ...mwbm.m_lastActiveTabURLs } : null;
   try {
     if (
       typeof Navigation !== 'undefined' &&
@@ -620,12 +634,30 @@ function openArticleNative(url: string): void {
       typeof Navigation?.NavigateToSteamWeb === 'function'
     ) {
       Navigation.NavigateToSteamWeb(url);
-      navLog('openArticleNative: NavigateToSteamWeb ' + url);
+      ilog('openArticleNative: NavigateToSteamWeb ' + url);
+      if (prevTabURLs && mwbm) {
+        const restoreSlots = (): void => {
+          const cur = mwbm.m_lastActiveTabURLs;
+          if (!cur) {
+            return;
+          }
+          for (const key of Object.keys(prevTabURLs)) {
+            if (key !== 'community') {
+              cur[key] = prevTabURLs[key];
+            }
+          }
+        };
+        // The clobber settles as the article loads; re-apply a few times to
+        // win any late re-sync.
+        [400, 1000, 1800, 2800].forEach((d) =>
+          window.setTimeout(restoreSlots, d),
+        );
+      }
       return;
     }
-    navLog('openArticleNative: NavigateToSteamWeb unavailable, falling back');
+    ilog('openArticleNative: NavigateToSteamWeb unavailable, falling back');
   } catch (e) {
-    navLog('openArticleNative NavigateToSteamWeb error: ' + String(e));
+    ilog('openArticleNative NavigateToSteamWeb error: ' + String(e));
   }
   try {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
