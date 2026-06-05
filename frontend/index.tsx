@@ -1123,13 +1123,12 @@ async function initHeaderInjection(): Promise<void> {
 }
 
 // ── News polling → native toasts ───────────────────────────────────────────
-// While Steam is open, poll the feed and toast genuinely new items. First ever
-// run seeds the seen-set silently so we don't spam existing news.
+// While Steam is open, ask the server what to toast and render it. The dedup
+// (across mobile + desktop) and the first-run seed live entirely on the server
+// (backend desktopToastService) — the plugin keeps NO local "seen" state.
 
-const NEWS_SEEN_KEY = 'gamenews_seen_news_ids';
 const NEWS_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const NEWS_MAX_TOASTS_PER_POLL = 5;
-const NEWS_MAX_SEEN = 500;
 // The follow-prompt "already prompted" set must remember the WHOLE library, not
 // a recent window: with the old 500 cap, a >500-game library overflowed the set,
 // so the overflow games were perpetually re-seen as "new" and re-prompted every
@@ -1142,26 +1141,6 @@ interface FeedItem {
   gameName: string;
   gameLogoUrl: string | null;
   news: { id: string; title: string; url: string };
-}
-
-function loadSeenNews(): Set<string> {
-  try {
-    const raw = localStorage.getItem(NEWS_SEEN_KEY);
-    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveSeenNews(seen: Set<string>): void {
-  try {
-    localStorage.setItem(
-      NEWS_SEEN_KEY,
-      JSON.stringify(Array.from(seen).slice(-NEWS_MAX_SEEN)),
-    );
-  } catch {
-    /* ignore quota / unavailable */
-  }
 }
 
 function openNewsUrl(url: string): void {
@@ -1201,8 +1180,12 @@ async function isSteamNotifEnabled(steamId: string): Promise<boolean> {
 }
 
 async function pollNewsOnce(steamId: string): Promise<void> {
+  // The server is the single source of truth: it returns ONLY the news to toast
+  // (already deduped across mobile + desktop, with a one-time silent seed on
+  // first contact) and marks them delivered. The plugin keeps no local state —
+  // it just renders. See backend desktopToastService.
   const result = await fetchBackend({
-    path: `/news/feed-by-steamid/${steamId}`,
+    path: `/news/desktop-toasts/${steamId}`,
   }).catch((): BackendProxyResult => ({ ok: false, error: 'fetch failed' }));
 
   if (!result.ok || result.status !== 200 || !result.body) {
@@ -1215,46 +1198,32 @@ async function pollNewsOnce(steamId: string): Promise<void> {
   } catch {
     return;
   }
-
-  const seen = loadSeenNews();
-
-  if (seen.size === 0) {
-    items.forEach((it) => seen.add(String(it.news.id)));
-    saveSeenNews(seen);
-    navLog(`news poll: seeded ${items.length} existing items (no toast)`);
+  if (items.length === 0) {
     return;
   }
 
-  const fresh = items.filter((it) => !seen.has(String(it.news.id)));
-
-  // Even when toasts are off we still mark fresh items as seen, so re-enabling
-  // the toggle later doesn't flood the user with everything accumulated since.
   const enabled = await isSteamNotifEnabled(steamId);
-  ilog(
-    `news poll: ${items.length} items, ${fresh.length} new, steamNotif=${enabled}`,
-  );
-
-  if (enabled) {
-    fresh.slice(0, NEWS_MAX_TOASTS_PER_POLL).forEach((it) => {
-      const url =
-        it.news.url ||
-        (it.appId ? `https://store.steampowered.com/news/app/${it.appId}` : '');
-      toaster.toast({
-        title: 'News',
-        body: it.gameName,
-        subtext: it.news.title,
-        logo: gameLogoNode(it.gameLogoUrl),
-        timestamp: null as unknown as Date, // hide the time (see simulate toast)
-        duration: 10000,
-        showToast: true,
-        playSound: true,
-        onClick: url ? () => openNewsUrl(url) : undefined,
-      });
-    });
+  ilog(`news poll: ${items.length} to toast, steamNotif=${enabled}`);
+  if (!enabled) {
+    return;
   }
 
-  fresh.forEach((it) => seen.add(String(it.news.id)));
-  saveSeenNews(seen);
+  items.slice(0, NEWS_MAX_TOASTS_PER_POLL).forEach((it) => {
+    const url =
+      it.news.url ||
+      (it.appId ? `https://store.steampowered.com/news/app/${it.appId}` : '');
+    toaster.toast({
+      title: 'News',
+      body: it.gameName,
+      subtext: it.news.title,
+      logo: gameLogoNode(it.gameLogoUrl),
+      timestamp: null as unknown as Date, // hide the time (see simulate toast)
+      duration: 10000,
+      showToast: true,
+      playSound: true,
+      onClick: url ? () => openNewsUrl(url) : undefined,
+    });
+  });
 }
 
 // ── Follow-prompt polling → clickable toasts ───────────────────────────────
