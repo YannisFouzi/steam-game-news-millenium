@@ -627,6 +627,23 @@ function openArticleNative(url: string): void {
   ).MainWindowBrowserManager;
   const prevTabURLs =
     mwbm && mwbm.m_lastActiveTabURLs ? { ...mwbm.m_lastActiveTabURLs } : null;
+  // DIAGNOSTIC: confirm the field we rely on still exists (it may have been
+  // renamed in a Millennium/Steam build) and observe whether our restore sticks
+  // or Steam re-pollutes it late. Logged via ilog (always on); remove once fixed.
+  const snapTabs = (): string => {
+    try {
+      return JSON.stringify(mwbm?.m_lastActiveTabURLs ?? null);
+    } catch {
+      return '(unserializable)';
+    }
+  };
+  ilog(
+    '[diag] mwbm=' +
+      (mwbm ? 'present' : 'ABSENT') +
+      ' m_lastActiveTabURLs=' +
+      (mwbm && mwbm.m_lastActiveTabURLs ? 'present' : 'ABSENT'),
+  );
+  ilog('[diag] before nav: ' + snapTabs());
   try {
     if (
       typeof Navigation !== 'undefined' &&
@@ -648,9 +665,17 @@ function openArticleNative(url: string): void {
           }
         };
         // The clobber settles as the article loads; re-apply a few times to
-        // win any late re-sync.
+        // win any late re-sync. DIAGNOSTIC: log the slot state at each pass.
         [400, 1000, 1800, 2800].forEach((d) =>
-          window.setTimeout(restoreSlots, d),
+          window.setTimeout(() => {
+            restoreSlots();
+            ilog('[diag] after restore@' + d + 'ms: ' + snapTabs());
+          }, d),
+        );
+        // Pure observation (no restore): does Steam re-pollute AFTER our last pass?
+        window.setTimeout(
+          () => ilog('[diag] observe@5000ms (no restore): ' + snapTabs()),
+          5000,
         );
       }
       return;
