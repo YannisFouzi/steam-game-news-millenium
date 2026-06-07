@@ -65,6 +65,25 @@ function detectAppId(): string | null {
   return match ? match[1] : null;
 }
 
+// The "Add to your wishlist" button (#add_to_wishlist_area), or its success twin
+// (#add_to_wishlist_area_success) when already wishlisted — long-standing Steam
+// store ids, same page DOM in the client. Both exist at once (display toggled),
+// so we return the VISIBLE one and anchor the bell after it. Null on owned/F2P
+// pages with no wishlist button.
+function wishlistAnchor(): HTMLElement | null {
+  let fallback: HTMLElement | null = null;
+  for (const sel of ['#add_to_wishlist_area', '#add_to_wishlist_area_success']) {
+    const el = document.querySelector<HTMLElement>(sel);
+    if (el) {
+      fallback = el;
+      if (el.offsetParent !== null) {
+        return el; // visible state wins
+      }
+    }
+  }
+  return fallback;
+}
+
 // ── Backend ops (all via the Lua GET proxy) ─────────────────────────────────
 
 async function fetchIsFollowed(steamId: string, appId: string): Promise<boolean> {
@@ -220,11 +239,9 @@ function injectBell(steamId: string): void {
   if (!appId) {
     return; // not a game page
   }
-  const anchor = document.querySelector<HTMLElement>(
-    '#appHubAppName, .apphub_AppName',
-  );
+  const anchor = wishlistAnchor();
   if (!anchor) {
-    return;
+    return; // wishlist button not in the DOM (yet, or owned/F2P) → no bell
   }
   const bell = buildBell(steamId, appId);
   bell.setAttribute('data-appid', appId);
