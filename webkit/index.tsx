@@ -65,23 +65,13 @@ function detectAppId(): string | null {
   return match ? match[1] : null;
 }
 
-// The "Add to your wishlist" button (#add_to_wishlist_area), or its success twin
-// (#add_to_wishlist_area_success) when already wishlisted — long-standing Steam
-// store ids, same page DOM in the client. Both exist at once (display toggled),
-// so we return the VISIBLE one and anchor the bell after it. Null on owned/F2P
-// pages with no wishlist button.
-function wishlistAnchor(): HTMLElement | null {
-  let fallback: HTMLElement | null = null;
-  for (const sel of ['#add_to_wishlist_area', '#add_to_wishlist_area_success']) {
-    const el = document.querySelector<HTMLElement>(sel);
-    if (el) {
-      fallback = el;
-      if (el.offsetParent !== null) {
-        return el; // visible state wins
-      }
-    }
-  }
-  return fallback;
+// Steam's "Follow / Following" button on a game's store page (#follow_button) —
+// a long-standing id present whether or not you own the game (unlike the
+// wishlist button, which disappears once owned), same page DOM in the client.
+// We anchor the bell just before it so it sits to its left. Null only when the
+// button isn't in the DOM yet.
+function followButtonAnchor(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('#follow_button');
 }
 
 // ── Backend ops (all via the Lua GET proxy) ─────────────────────────────────
@@ -173,7 +163,7 @@ function buildBell(steamId: string, appId: string): HTMLButtonElement {
     justifyContent: 'center',
     width: '34px',
     height: '34px',
-    marginLeft: '10px',
+    marginRight: '8px',
     verticalAlign: 'middle',
     border: '1px solid rgba(255,255,255,0.18)',
     borderRadius: '4px',
@@ -239,13 +229,13 @@ function injectBell(steamId: string): void {
   if (!appId) {
     return; // not a game page
   }
-  const anchor = wishlistAnchor();
+  const anchor = followButtonAnchor();
   if (!anchor) {
-    return; // wishlist button not in the DOM (yet, or owned/F2P) → no bell
+    return; // follow button not in the DOM yet → no bell
   }
   const bell = buildBell(steamId, appId);
   bell.setAttribute('data-appid', appId);
-  anchor.insertAdjacentElement('afterend', bell);
+  anchor.insertAdjacentElement('beforebegin', bell);
 
   // Reflect the current follow state (empty → green if already followed).
   void (async () => {

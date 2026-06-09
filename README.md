@@ -17,9 +17,10 @@ click to follow" prompts while Steam is open.
 - Full feed rendered **inside Steam** (plugin-owned route + iframe) — never
   hijacks the native tabs' browser.
 - Clicking a news article opens it in Steam's **native** Community/Store tab.
-- **Follow bell on a game's store page** — a bell next to the *Add to your
-  wishlist* button lets you follow / unfollow that game's news in one click,
-  without opening the feed. Empty when not followed, green when followed.
+- **Follow bell on a game's store page** — a bell next to Steam's *Follow*
+  button lets you follow / unfollow that game's news in one click, without
+  opening the feed. Empty when not followed, green when followed. Shown whether
+  or not you own the game.
 - Follow / unfollow games and edit notification settings directly from the feed.
 - Native toasts for new news and follow prompts; presence heartbeat for
   mobile/desktop notification de-duplication.
