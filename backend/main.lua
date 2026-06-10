@@ -187,10 +187,13 @@ function fetch_backend(arg1)
     -- arg1 est une string et non une table -> pas de drapeau par appel). Ajoute
     -- APRES le log pour ne jamais ecrire le secret en clair dans les logs ; les
     -- endpoints non proteges ignorent simplement le param.
+    -- `url` (sans secret) est conserve pour les logs ; `request_url` (avec
+    -- secret) ne sert QU'A http.get et n'est jamais loggue (sinon le secret
+    -- fuiterait en clair dans les logs Millennium).
     local sep = url:find("?", 1, true) and "&" or "?"
-    url = url .. sep .. "secret=" .. get_or_create_secret()
+    local request_url = url .. sep .. "secret=" .. get_or_create_secret()
 
-    local response, err = http.get(url, {
+    local response, err = http.get(request_url, {
         timeout = DEFAULT_TIMEOUT_SECONDS,
         headers = { ["Accept"] = "application/json" },
     })
