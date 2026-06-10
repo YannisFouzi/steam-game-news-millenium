@@ -65,13 +65,14 @@ function detectAppId(): string | null {
   return match ? match[1] : null;
 }
 
-// Steam's "Follow / Following" button on a game's store page (#follow_button) —
-// a long-standing id present whether or not you own the game (unlike the
-// wishlist button, which disappears once owned), same page DOM in the client.
-// We anchor the bell just before it so it sits to its left. Null only when the
-// button isn't in the DOM yet.
+// Steam's "Follow / Following" button on a game's store page — the
+// `.queue_control_button.queue_btn_follow` container (it has NO id; verified
+// against Valve's own SteamTracking JS and SteamDB's extension), same page DOM
+// in the client. Present whether or not you own the game (unlike the wishlist
+// button, which disappears once owned). We anchor the bell just before it so it
+// sits to its left. Null only when the button isn't in the DOM yet.
 function followButtonAnchor(): HTMLElement | null {
-  return document.querySelector<HTMLElement>('#follow_button');
+  return document.querySelector<HTMLElement>('.queue_control_button.queue_btn_follow');
 }
 
 // ── Backend ops (all via the Lua GET proxy) ─────────────────────────────────
