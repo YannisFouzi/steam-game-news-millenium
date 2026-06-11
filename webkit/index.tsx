@@ -65,14 +65,21 @@ function detectAppId(): string | null {
   return match ? match[1] : null;
 }
 
-// Steam's "Follow / Following" button on a game's store page — the
-// `.queue_control_button.queue_btn_follow` container (it has NO id; verified
-// against Valve's own SteamTracking JS and SteamDB's extension), same page DOM
-// in the client. Present whether or not you own the game (unlike the wishlist
-// button, which disappears once owned). We anchor the bell just before it so it
-// sits to its left. Null only when the button isn't in the DOM yet.
-function followButtonAnchor(): HTMLElement | null {
-  return document.querySelector<HTMLElement>('.queue_control_button.queue_btn_follow');
+// The action row on a game's store page that holds Steam's queue buttons
+// (wishlist / follow / ignore / share). The exact button MIX varies per game
+// and account state — Follow is missing on some pages, share on others, the
+// wishlist button disappears once you own the game — so the bell anchors on
+// the CONTAINER, never on a sibling button (anchoring on wishlist then Follow
+// both broke when that button happened to be absent).
+// Primary: #queueActionsCtn (Valve's id for the row). Fallback: derive the row
+// from whatever .queue_control_button is present (Ignore is always rendered).
+function actionsContainer(): HTMLElement | null {
+  const ctn = document.querySelector<HTMLElement>('#queueActionsCtn');
+  if (ctn) {
+    return ctn;
+  }
+  const anyBtn = document.querySelector<HTMLElement>('.queue_control_button');
+  return anyBtn ? anyBtn.parentElement : null;
 }
 
 // ── Backend ops (all via the Lua GET proxy) ─────────────────────────────────
@@ -230,13 +237,22 @@ function injectBell(steamId: string): void {
   if (!appId) {
     return; // not a game page
   }
-  const anchor = followButtonAnchor();
-  if (!anchor) {
-    return; // follow button not in the DOM yet → no bell
+  const container = actionsContainer();
+  if (!container) {
+    return; // action row not in the DOM yet → the observer retries
   }
   const bell = buildBell(steamId, appId);
   bell.setAttribute('data-appid', appId);
-  anchor.insertAdjacentElement('beforebegin', bell);
+  // Position hint only (never a requirement): before the Follow button when it
+  // exists (historic placement), otherwise simply take a slot in the row.
+  const followBtn = container.querySelector<HTMLElement>(
+    '.queue_control_button.queue_btn_follow',
+  );
+  if (followBtn) {
+    followBtn.insertAdjacentElement('beforebegin', bell);
+  } else {
+    container.appendChild(bell);
+  }
 
   // Reflect the current follow state (empty → green if already followed).
   void (async () => {
