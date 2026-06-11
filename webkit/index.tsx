@@ -262,22 +262,48 @@ function injectBell(steamId: string): void {
   }
   const bell = buildBell(steamId, appId);
   bell.setAttribute('data-appid', appId);
-  // Position hint only (never a requirement): before the Follow button when it
-  // exists (historic placement), otherwise simply take a slot in the row.
+  // Placement : JAMAIS en fin de rangée. Vérifié au runtime (Destiny 2 DLC) :
+  // le conteneur garde des enfants cachés par Valve (états wishlist, flyouts) et
+  // une cloche appendée après eux est rendue invisible. On s'insère donc avant le
+  // premier bouton VISIBLE — l'endroit dont l'affichage est garanti :
+  //   1. avant « Suivre » s'il est visible (placement historique) ;
+  //   2. sinon avant le premier .queue_control_button visible (ex. DLC : wishlist) ;
+  //   3. sinon en tête de rangée.
+  const isVisible = (el: HTMLElement): boolean =>
+    el.offsetParent !== null && el.offsetWidth > 0;
   const followBtn = container.querySelector<HTMLElement>(
     '.queue_control_button.queue_btn_follow',
   );
-  if (followBtn) {
+  let position: string;
+  if (followBtn && isVisible(followBtn)) {
     followBtn.insertAdjacentElement('beforebegin', bell);
+    position = 'before-follow';
   } else {
-    container.appendChild(bell);
+    const firstVisibleBtn = Array.from(
+      container.querySelectorAll<HTMLElement>('.queue_control_button'),
+    ).find(isVisible);
+    if (firstVisibleBtn) {
+      firstVisibleBtn.insertAdjacentElement('beforebegin', bell);
+      position = 'before-first-visible-btn';
+    } else {
+      container.prepend(bell);
+      position = 'prepended';
+    }
   }
-  logInjectState(
-    'bell injected appId=' + appId +
-    ' anchor=' + (container.id || container.className || 'unnamed') +
-    ' position=' + (followBtn ? 'before-follow' : 'appended') +
-    ' containerChildren=' + container.childElementCount,
-  );
+  // Mesure post-layout : prouve que la cloche est réellement AFFICHÉE (rect non
+  // nul), pas seulement présente dans le DOM — c'est ce qui a manqué pour
+  // diagnostiquer le cas « injectée mais invisible ».
+  requestAnimationFrame(() => {
+    const r = bell.getBoundingClientRect();
+    wlog(
+      'bell injected appId=' + appId +
+      ' position=' + position +
+      ' containerChildren=' + container.childElementCount +
+      ' rect=' + Math.round(r.width) + 'x' + Math.round(r.height) +
+      '@' + Math.round(r.x) + ',' + Math.round(r.y) +
+      ' visible=' + (bell.offsetParent !== null),
+    );
+  });
 
   // Reflect the current follow state (empty → green if already followed).
   void (async () => {
@@ -298,7 +324,7 @@ export default async function WebkitMain(): Promise<void> {
   }
   // Boot marker: version + page. Si cette ligne n'apparaît pas dans le log Lua,
   // le webkit ne tourne pas sur cette page (vieux bundle / restart manquant).
-  wlog('v1.2.5 boot on ' + window.location.pathname);
+  wlog('v1.2.5-r2 boot on ' + window.location.pathname);
   // documentElement always exists; the observer re-injects on late/ SPA DOM.
   const observer = new MutationObserver(() => injectBell(steamId));
   observer.observe(document.documentElement, { childList: true, subtree: true });
