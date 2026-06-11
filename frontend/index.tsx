@@ -180,14 +180,21 @@ async function getPairSecret(): Promise<string> {
   if (cachedPairSecret) {
     return cachedPairSecret;
   }
+  // The secret is now minted server-side on first contact (CSPRNG), so this can
+  // momentarily be empty while pairing completes. Only cache a real secret —
+  // never cache '' — so a transient miss retries instead of poisoning the
+  // session (the old local math.random secret never failed, hence no retry).
   try {
     const raw = await getPairSecretRaw();
     const parsed = JSON.parse(raw) as { secret?: string };
-    cachedPairSecret = parsed.secret ?? '';
+    const secret = parsed.secret ?? '';
+    if (secret) {
+      cachedPairSecret = secret;
+    }
+    return secret;
   } catch {
-    cachedPairSecret = '';
+    return '';
   }
-  return cachedPairSecret;
 }
 
 // Verbose nav/styling diagnostics. Off for store releases; flip to true to

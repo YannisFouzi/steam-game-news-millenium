@@ -118,52 +118,121 @@ end
 
 local STEAM_ROOT = find_steam_root()
 
--- ── Per-install pairing secret (privacy TOFU) ──────────────────────────────
--- Le plugin prouve son identite via un secret par-installation (le token web
--- Steam est inrecuperable). On le stocke en clair dans un fichier du dossier
--- plugin, on l'envoie en header X-GN-Secret. Le backend ne voit qu'un hash.
-local SECRET_FILE = path_join(PLUGIN_DIR, "gn_pair_secret")
-
-local function generate_secret()
-    -- 40 hex chars. math.random n'est pas crypto mais suffit pour un secret
-    -- par-installation (non devinable a distance, jamais reutilise).
-    math.randomseed(os.time() + math.floor(os.clock() * 1000000))
-    for _ = 1, 16 do math.random() end -- warmup
-    local hex = ""
-    for _ = 1, 40 do
-        hex = hex .. string.format("%x", math.random(0, 15))
-    end
-    return hex
-end
-
-local function get_or_create_secret()
-    local f = io.open(SECRET_FILE, "r")
-    if f then
-        local s = f:read("*a")
-        f:close()
-        if s then
-            s = s:gsub("%s+", "")
-            if #s >= 16 then
-                return s
-            end
+-- ── Steam ID resolution (loginusers.vdf) ───────────────────────────────────
+-- Remonte ici (avant la section secret) car le bootstrap d'appairage en a
+-- besoin pour demander un secret au backend. Utilise aussi par le callable
+-- get_steam_id plus bas.
+local function parse_loginusers(content)
+    -- Pass 1: find a steamId block whose body contains MostRecent "1"
+    for steamId, body in content:gmatch('"(%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d)"%s*{([^}]*)}') do
+        if body:match('"MostRecent"%s*"1"') then
+            return steamId, "loginusers.vdf:MostRecent"
         end
     end
-    local secret = generate_secret()
+    -- Pass 2: fallback to first steamId-shaped key
+    for steamId in content:gmatch('"(%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d)"') do
+        return steamId, "loginusers.vdf:first"
+    end
+    return nil, "loginusers.vdf:none"
+end
+
+-- Renvoie (steamId, source). steamId = string ou nil ; source decrit l'origine
+-- ou la raison de l'echec (diagnostic logs).
+local function resolve_steam_id()
+    if STEAM_ROOT == nil then
+        return nil, "no-steam-root"
+    end
+    local vdf_path = path_join(STEAM_ROOT, "config/loginusers.vdf")
+    local f, err = io.open(vdf_path, "r")
+    if not f then
+        return nil, "io-error:" .. tostring(err)
+    end
+    local content = f:read("*a")
+    f:close()
+    return parse_loginusers(content or "")
+end
+
+-- ── Per-install pairing secret (privacy TOFU) ──────────────────────────────
+-- Le secret par-installation prouve l'identite du plugin (le token web Steam
+-- est inrecuperable). Il est genere CÔTÉ SERVEUR (CSPRNG) au 1er contact via
+-- GET /web/pair sans secret, puis persiste localement. Le backend ne stocke
+-- qu'un hash SHA-256, jamais le secret en clair. (Avant : genere via
+-- math.random cote Lua, entropie faible — corrige.)
+local SECRET_FILE = path_join(PLUGIN_DIR, "gn_pair_secret")
+
+-- Lit le secret persiste, ou nil s'il n'existe pas encore. PAS de generation
+-- locale : l'entropie vient du serveur (cf. fetch_secret_from_backend).
+local function read_local_secret()
+    local f = io.open(SECRET_FILE, "r")
+    if not f then
+        return nil
+    end
+    local s = f:read("*a")
+    f:close()
+    if s then
+        s = s:gsub("%s+", "")
+        if #s >= 16 then
+            return s
+        end
+    end
+    return nil
+end
+
+-- Demande au backend de minter un secret fort (CSPRNG) et le persiste. Appel
+-- http.get DIRECT (jamais fetch_backend) pour ne pas s'auto-injecter un secret
+-- et eviter toute recursion. Renvoie le secret, ou nil en cas d'echec (retente
+-- au prochain appel).
+local function fetch_secret_from_backend(steamId)
+    if http == nil or type(steamId) ~= "string" or #steamId == 0 then
+        return nil
+    end
+    local response, err = http.get(
+        BACKEND_BASE_URL .. "/web/pair?steamId=" .. steamId,
+        {
+            timeout = DEFAULT_TIMEOUT_SECONDS,
+            headers = { ["Accept"] = "application/json" },
+        }
+    )
+    if not response then
+        logger:warn("[GameNews] pair fetch failed: " .. tostring(err))
+        return nil
+    end
+    -- Reponse attendue au 1er appairage : {"ok":true,"paired":true,"secret":"<40hex>"}.
+    -- Si deja appaire, le backend renvoie {"ok":true,"alreadyPaired":true} (sans
+    -- secret) — on ne peut alors rien persister (le hash seul est cote serveur).
+    local secret = (response.body or ""):match('"secret"%s*:%s*"([0-9a-fA-F]+)"')
+    if not secret or #secret < 16 then
+        return nil
+    end
     local wf, werr = io.open(SECRET_FILE, "w")
     if wf then
         wf:write(secret)
         wf:close()
-        logger:info("[GameNews] generated new pairing secret")
+        logger:info("[GameNews] stored server-minted pairing secret")
     else
         logger:warn("[GameNews] could not write secret file: " .. tostring(werr))
     end
     return secret
 end
 
--- Callable exposee au frontend pour recuperer le secret (afin de l'injecter
--- dans l'iframe du feed).
+-- Secret effectif : le local s'il existe, sinon on le fait minter par le
+-- serveur. Peut renvoyer nil au tout premier appel si le backend est
+-- injoignable / le compte pas encore provisionne.
+local function get_or_create_secret()
+    local s = read_local_secret()
+    if s then
+        return s
+    end
+    return fetch_secret_from_backend(resolve_steam_id())
+end
+
+-- Callable exposee au frontend pour injecter le secret dans l'iframe du feed.
 function get_pair_secret()
-    return "{\"secret\":" .. json_string(get_or_create_secret()) .. "}"
+    local s = get_or_create_secret()
+    if not s then
+        return "{\"secret\":null}"
+    end
+    return "{\"secret\":" .. json_string(s) .. "}"
 end
 
 -- ── Callable: fetch_backend ────────────────────────────────────────────────
@@ -189,9 +258,15 @@ function fetch_backend(arg1)
     -- endpoints non proteges ignorent simplement le param.
     -- `url` (sans secret) est conserve pour les logs ; `request_url` (avec
     -- secret) ne sert QU'A http.get et n'est jamais loggue (sinon le secret
-    -- fuiterait en clair dans les logs Millennium).
-    local sep = url:find("?", 1, true) and "&" or "?"
-    local request_url = url .. sep .. "secret=" .. get_or_create_secret()
+    -- fuiterait en clair dans les logs Millennium). Le secret peut etre nil au
+    -- tout premier appel (pas encore minte par le serveur) : on n'ajoute alors
+    -- rien et l'endpoint, s'il est gate, sera retente une fois appaire.
+    local secret = get_or_create_secret()
+    local request_url = url
+    if secret then
+        local sep = url:find("?", 1, true) and "&" or "?"
+        request_url = url .. sep .. "secret=" .. secret
+    end
 
     local response, err = http.get(request_url, {
         timeout = DEFAULT_TIMEOUT_SECONDS,
@@ -209,56 +284,16 @@ end
 -- this version, so mutations (follow) go through GET on fetch_backend instead
 -- (the backend /api/web/follow accepts GET). Only http.get is used here.
 
--- ── Callable: get_steam_id (reads from Steam's loginusers.vdf) ─────────────
--- VDF format (excerpt):
---   "users"
---   {
---     "76561198158439485"
---     {
---       "AccountName"   "rapture_fouzi"
---       "MostRecent"    "1"
---       ...
---     }
---   }
---
--- We grep for a 17-digit block that contains "MostRecent" "1". If no
--- MostRecent flag is found, we fall back to the first 17-digit key.
-
-local function parse_loginusers(content)
-    -- Pass 1: find a steamId block whose body contains MostRecent "1"
-    for steamId, body in content:gmatch('"(%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d)"%s*{([^}]*)}') do
-        if body:match('"MostRecent"%s*"1"') then
-            return steamId, "loginusers.vdf:MostRecent"
-        end
-    end
-    -- Pass 2: fallback to first steamId-shaped key
-    for steamId in content:gmatch('"(%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d)"') do
-        return steamId, "loginusers.vdf:first"
-    end
-    return nil, "loginusers.vdf:none"
-end
-
+-- ── Callable: get_steam_id ─────────────────────────────────────────────────
+-- Wrapper JSON autour de resolve_steam_id (defini plus haut, partage avec le
+-- bootstrap d'appairage). VDF format : un bloc 17-digits contenant
+-- "MostRecent" "1", sinon premier 17-digits.
 function get_steam_id()
-    if STEAM_ROOT == nil then
-        return build_steam_id_response(nil, "no-steam-root")
-    end
-
-    local vdf_path = path_join(STEAM_ROOT, "config/loginusers.vdf")
-    logger:info("[GameNews] get_steam_id reading " .. vdf_path)
-
-    local f, err = io.open(vdf_path, "r")
-    if not f then
-        logger:warn("[GameNews] io.open failed: " .. tostring(err))
-        return build_steam_id_response(nil, "io-error:" .. tostring(err))
-    end
-    local content = f:read("*a")
-    f:close()
-
-    local steamId, source = parse_loginusers(content or "")
+    local steamId, source = resolve_steam_id()
     if steamId then
-        logger:info("[GameNews] resolved steamId from " .. source)
+        logger:info("[GameNews] resolved steamId from " .. tostring(source))
     else
-        logger:warn("[GameNews] no steamId match in vdf")
+        logger:warn("[GameNews] no steamId resolved (" .. tostring(source) .. ")")
     end
     return build_steam_id_response(steamId, source)
 end
