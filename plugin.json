@@ -3,7 +3,7 @@
   "name": "game-news",
   "common_name": "Game News",
   "description": "A NEWS feed for the games you follow, full-page inside the Steam Desktop client — with follow management, native toasts and settings.",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "thumbnail": "thumbnail.png",
   "backendType": "lua"
 }

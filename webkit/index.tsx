@@ -31,6 +31,18 @@ function wlog(msg: string): void {
   void relayLogRaw({ msg: '[webkit] ' + msg }).catch((): void => {});
 }
 
+// Le MutationObserver appelle injectBell des centaines de fois par page : on ne
+// logge l'état d'injection QUE quand il change (one-shot par état). Sans ça,
+// soit on spamme le log Lua, soit on est aveugles — on a été aveugles.
+let lastInjectState = '';
+function logInjectState(state: string): void {
+  if (state === lastInjectState) {
+    return;
+  }
+  lastInjectState = state;
+  wlog(state);
+}
+
 interface ProxyResult {
   ok: boolean; // the Lua proxy reached the backend
   status?: number; // the HTTP status it got back
@@ -235,10 +247,17 @@ function injectBell(steamId: string): void {
     existing.remove();
   }
   if (!appId) {
-    return; // not a game page
+    logInjectState('skip: not a game page url=' + window.location.pathname);
+    return;
   }
   const container = actionsContainer();
   if (!container) {
+    // Diagnostic complet : la cause la plus probable d'une cloche absente.
+    logInjectState(
+      'no anchor for appId=' + appId +
+      ' — #queueActionsCtn=' + (document.getElementById('queueActionsCtn') ? 'yes' : 'NO') +
+      ' .queue_control_button=' + document.querySelectorAll('.queue_control_button').length,
+    );
     return; // action row not in the DOM yet → the observer retries
   }
   const bell = buildBell(steamId, appId);
@@ -253,6 +272,12 @@ function injectBell(steamId: string): void {
   } else {
     container.appendChild(bell);
   }
+  logInjectState(
+    'bell injected appId=' + appId +
+    ' anchor=' + (container.id || container.className || 'unnamed') +
+    ' position=' + (followBtn ? 'before-follow' : 'appended') +
+    ' containerChildren=' + container.childElementCount,
+  );
 
   // Reflect the current follow state (empty → green if already followed).
   void (async () => {
@@ -271,6 +296,9 @@ export default async function WebkitMain(): Promise<void> {
     wlog('no steamId — bell disabled');
     return;
   }
+  // Boot marker: version + page. Si cette ligne n'apparaît pas dans le log Lua,
+  // le webkit ne tourne pas sur cette page (vieux bundle / restart manquant).
+  wlog('v1.2.5 boot on ' + window.location.pathname);
   // documentElement always exists; the observer re-injects on late/ SPA DOM.
   const observer = new MutationObserver(() => injectBell(steamId));
   observer.observe(document.documentElement, { childList: true, subtree: true });
