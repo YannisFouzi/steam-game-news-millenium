@@ -16,6 +16,8 @@
 import { callable } from '@steambrew/webkit';
 
 const BELL_ID = 'game-news-follow-bell';
+const PLUS_ID = 'game-news-follow-plus';
+const CONTROLS_ID = 'game-news-follow-controls';
 const APP_ID_FROM_PATH = /\/app\/(\d+)/;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const HEADER_IMG = (appId: string): string =>
@@ -96,25 +98,40 @@ function actionsContainer(): HTMLElement | null {
 
 // ── Backend ops (all via the Lua GET proxy) ─────────────────────────────────
 
-async function fetchIsFollowed(steamId: string, appId: string): Promise<boolean> {
+interface FollowState {
+  followed: boolean;
+  notified: boolean; // notifications on (notified ⊆ followed)
+}
+
+async function fetchFollowState(
+  steamId: string,
+  appId: string,
+): Promise<FollowState> {
   const r = await backendGet(`/web/follow-state/${steamId}/${appId}`);
   if (!r.ok || !r.body) {
-    return false;
+    return { followed: false, notified: false };
   }
   try {
-    return Boolean((JSON.parse(r.body) as { followed?: boolean }).followed);
+    const data = JSON.parse(r.body) as {
+      followed?: boolean;
+      notifications?: boolean;
+    };
+    const followed = Boolean(data.followed);
+    return { followed, notified: followed && data.notifications !== false };
   } catch {
-    return false;
+    return { followed: false, notified: false };
   }
 }
 
 async function requestFollow(
   steamId: string,
   appId: string,
+  notifications: boolean,
   name?: string,
   logoUrl?: string,
 ): Promise<boolean> {
   const params = new URLSearchParams({ steamId, appId });
+  params.set('notifications', notifications ? 'true' : 'false');
   if (name) {
     params.set('name', name);
   }
@@ -137,53 +154,75 @@ async function requestUnfollow(steamId: string, appId: string): Promise<boolean>
   return httpOk(await backendGet(`/web/unfollow/${steamId}/${appId}`));
 }
 
+// Toggle notifications without unfollowing — GET alias of the PUT endpoint (the
+// Lua proxy is GET-only).
+async function requestSetNotifications(
+  steamId: string,
+  appId: string,
+  enabled: boolean,
+): Promise<boolean> {
+  return httpOk(
+    await backendGet(
+      `/web/follow-notifications/${steamId}/${appId}?enabled=${
+        enabled ? 'true' : 'false'
+      }`,
+    ),
+  );
+}
+
 // ── Bell UI (plain DOM — no React; mirrors the extension's bell) ─────────────
 
-function makeBellIcon(followed: boolean): SVGSVGElement {
-  const color = followed ? '#a4d007' : '#c7d5e0'; // Steam green when followed
+const ICON_GREEN = '#a4d007'; // Steam green when active
+const ICON_IDLE = '#c7d5e0';
+
+function strokePath(d: string): SVGPathElement {
+  const p = document.createElementNS(SVG_NS, 'path');
+  p.setAttribute('d', d);
+  return p;
+}
+
+// Bell, Steam-green when notifications are ON.
+function makeBellIcon(notified: boolean): SVGSVGElement {
+  const color = notified ? ICON_GREEN : ICON_IDLE;
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('width', '20');
   svg.setAttribute('height', '20');
   svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('fill', followed ? color : 'none');
+  svg.setAttribute('fill', notified ? color : 'none');
   svg.setAttribute('stroke', color);
   svg.setAttribute('stroke-width', '2');
   svg.setAttribute('stroke-linecap', 'round');
   svg.setAttribute('stroke-linejoin', 'round');
   svg.setAttribute('aria-hidden', 'true');
-  const bow = document.createElementNS(SVG_NS, 'path');
-  bow.setAttribute('d', 'M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9');
-  const clapper = document.createElementNS(SVG_NS, 'path');
-  clapper.setAttribute('d', 'M13.73 21a2 2 0 0 1-3.46 0');
-  svg.appendChild(bow);
-  svg.appendChild(clapper);
+  svg.appendChild(strokePath('M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9'));
+  svg.appendChild(strokePath('M13.73 21a2 2 0 0 1-3.46 0'));
   return svg;
 }
 
-function setBellState(bell: HTMLElement, followed: boolean): void {
-  bell.setAttribute('data-followed', followed ? 'true' : 'false');
-  bell.setAttribute('aria-pressed', followed ? 'true' : 'false');
-  bell.title = followed
-    ? 'Ne plus suivre les news de ce jeu'
-    : 'Suivre les news de ce jeu';
-  bell.setAttribute(
-    'aria-label',
-    followed ? 'Ne plus suivre ce jeu' : 'Suivre ce jeu',
-  );
-  bell.replaceChildren(makeBellIcon(followed));
+// "+" when not followed, checkmark when followed. Green once followed.
+function makePlusIcon(followed: boolean): SVGSVGElement {
+  const color = followed ? ICON_GREEN : ICON_IDLE;
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('width', '20');
+  svg.setAttribute('height', '20');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', color);
+  svg.setAttribute('stroke-width', '2.4');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.appendChild(strokePath(followed ? 'M20 6L9 17l-5-5' : 'M12 5v14M5 12h14'));
+  return svg;
 }
 
-function buildBell(steamId: string, appId: string): HTMLButtonElement {
-  const bell = document.createElement('button');
-  bell.id = BELL_ID;
-  bell.type = 'button';
-  Object.assign(bell.style, {
+function styleControlButton(btn: HTMLButtonElement): void {
+  Object.assign(btn.style, {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
     width: '34px',
     height: '34px',
-    marginRight: '8px',
     verticalAlign: 'middle',
     border: '1px solid rgba(255,255,255,0.18)',
     borderRadius: '4px',
@@ -192,55 +231,144 @@ function buildBell(steamId: string, appId: string): HTMLButtonElement {
     padding: '0',
     transition: 'opacity 120ms ease',
   });
-  setBellState(bell, false);
-  bell.addEventListener('click', (event) => {
-    event.preventDefault();
-    void onBellClick(bell, steamId, appId);
-  });
-  return bell;
 }
 
-// Optimistic toggle: flip immediately, confirm via the proxy, revert on failure.
-async function onBellClick(
-  bell: HTMLElement,
-  steamId: string,
-  appId: string,
-): Promise<void> {
-  if (bell.getAttribute('aria-busy') === 'true') {
-    return;
+// data-followed / data-notified on the container drive both icons.
+function setControlsState(
+  container: HTMLElement,
+  followed: boolean,
+  notified: boolean,
+): void {
+  container.setAttribute('data-followed', followed ? 'true' : 'false');
+  container.setAttribute('data-notified', notified ? 'true' : 'false');
+  const plus = container.querySelector<HTMLElement>('#' + PLUS_ID);
+  const bell = container.querySelector<HTMLElement>('#' + BELL_ID);
+  if (plus) {
+    plus.setAttribute('aria-pressed', followed ? 'true' : 'false');
+    plus.title = followed
+      ? 'Ne plus suivre ce jeu'
+      : 'Suivre ce jeu (sans notifications)';
+    plus.setAttribute('aria-label', plus.title);
+    plus.replaceChildren(makePlusIcon(followed));
   }
-  const next = bell.getAttribute('data-followed') !== 'true';
-  setBellState(bell, next);
-  bell.setAttribute('aria-busy', 'true');
-  bell.style.opacity = '0.6';
+  if (bell) {
+    bell.setAttribute('aria-pressed', notified ? 'true' : 'false');
+    bell.title = notified
+      ? 'Couper les notifications'
+      : 'Activer les notifications';
+    bell.setAttribute('aria-label', bell.title);
+    bell.replaceChildren(makeBellIcon(notified));
+  }
+}
 
+function setControlsBusy(container: HTMLElement, busy: boolean): void {
+  container.setAttribute('aria-busy', busy ? 'true' : 'false');
+  container.style.opacity = busy ? '0.6' : '1';
+  container.style.pointerEvents = busy ? 'none' : '';
+}
+
+function gameName(): string | undefined {
   const nameEl = document.querySelector<HTMLElement>(
     '#appHubAppName, .apphub_AppName',
   );
-  const name = nameEl?.textContent?.trim() || undefined;
+  return nameEl?.textContent?.trim() || undefined;
+}
 
+// Optimistic mutation: apply target state, run the request, revert on failure.
+async function runControls(
+  container: HTMLElement,
+  target: { followed: boolean; notified: boolean },
+  action: () => Promise<boolean>,
+): Promise<void> {
+  if (container.getAttribute('aria-busy') === 'true') {
+    return;
+  }
+  const prevFollowed = container.getAttribute('data-followed') === 'true';
+  const prevNotified = container.getAttribute('data-notified') === 'true';
+  setControlsState(container, target.followed, target.notified);
+  setControlsBusy(container, true);
   let ok = false;
   try {
-    ok = next
-      ? await requestFollow(steamId, appId, name, HEADER_IMG(appId))
-      : await requestUnfollow(steamId, appId);
+    ok = await action();
   } catch {
     ok = false;
   }
-
-  bell.removeAttribute('aria-busy');
-  bell.style.opacity = '1';
+  setControlsBusy(container, false);
   if (!ok) {
-    setBellState(bell, !next); // revert
-    wlog('toggle failed for appId=' + appId);
+    setControlsState(container, prevFollowed, prevNotified); // revert
+    wlog('toggle failed for appId=' + (container.getAttribute('data-appid') || '?'));
   }
+}
+
+// [+] : not followed → silent follow ; followed → unfollow.
+function onPlusClick(container: HTMLElement, steamId: string, appId: string): void {
+  const followed = container.getAttribute('data-followed') === 'true';
+  if (followed) {
+    void runControls(container, { followed: false, notified: false }, () =>
+      requestUnfollow(steamId, appId),
+    );
+    return;
+  }
+  void runControls(container, { followed: true, notified: false }, () =>
+    requestFollow(steamId, appId, false, gameName(), HEADER_IMG(appId)),
+  );
+}
+
+// bell : not followed → follow + notify ; followed → toggle notifications.
+function onBellClick(container: HTMLElement, steamId: string, appId: string): void {
+  const followed = container.getAttribute('data-followed') === 'true';
+  const notified = container.getAttribute('data-notified') === 'true';
+  if (!followed) {
+    void runControls(container, { followed: true, notified: true }, () =>
+      requestFollow(steamId, appId, true, gameName(), HEADER_IMG(appId)),
+    );
+    return;
+  }
+  void runControls(container, { followed: true, notified: !notified }, () =>
+    requestSetNotifications(steamId, appId, !notified),
+  );
+}
+
+function buildControls(steamId: string, appId: string): HTMLElement {
+  const container = document.createElement('span');
+  container.id = CONTROLS_ID;
+  Object.assign(container.style, {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    marginRight: '8px',
+    verticalAlign: 'middle',
+  });
+
+  const plus = document.createElement('button');
+  plus.id = PLUS_ID;
+  plus.type = 'button';
+  styleControlButton(plus);
+  plus.addEventListener('click', (event) => {
+    event.preventDefault();
+    onPlusClick(container, steamId, appId);
+  });
+
+  const bell = document.createElement('button');
+  bell.id = BELL_ID;
+  bell.type = 'button';
+  styleControlButton(bell);
+  bell.addEventListener('click', (event) => {
+    event.preventDefault();
+    onBellClick(container, steamId, appId);
+  });
+
+  container.appendChild(plus);
+  container.appendChild(bell);
+  setControlsState(container, false, false);
+  return container;
 }
 
 function injectBell(steamId: string): void {
   const appId = detectAppId();
-  const existing = document.getElementById(BELL_ID);
+  const existing = document.getElementById(CONTROLS_ID);
   if (existing) {
-    // SPA nav to another app within the same web view → refresh a stale bell.
+    // SPA nav to another app within the same web view → refresh a stale control.
     if (existing.getAttribute('data-appid') === appId) {
       return;
     }
@@ -260,11 +388,11 @@ function injectBell(steamId: string): void {
     );
     return; // action row not in the DOM yet → the observer retries
   }
-  const bell = buildBell(steamId, appId);
-  bell.setAttribute('data-appid', appId);
+  const controls = buildControls(steamId, appId);
+  controls.setAttribute('data-appid', appId);
   // Placement : JAMAIS en fin de rangée. Vérifié au runtime (Destiny 2 DLC) :
   // le conteneur garde des enfants cachés par Valve (états wishlist, flyouts) et
-  // une cloche appendée après eux est rendue invisible. On s'insère donc avant le
+  // un contrôle appendé après eux est rendu invisible. On s'insère donc avant le
   // premier bouton VISIBLE — l'endroit dont l'affichage est garanti :
   //   1. avant « Suivre » s'il est visible (placement historique) ;
   //   2. sinon avant le premier .queue_control_button visible (ex. DLC : wishlist) ;
@@ -276,38 +404,39 @@ function injectBell(steamId: string): void {
   );
   let position: string;
   if (followBtn && isVisible(followBtn)) {
-    followBtn.insertAdjacentElement('beforebegin', bell);
+    followBtn.insertAdjacentElement('beforebegin', controls);
     position = 'before-follow';
   } else {
     const firstVisibleBtn = Array.from(
       container.querySelectorAll<HTMLElement>('.queue_control_button'),
     ).find(isVisible);
     if (firstVisibleBtn) {
-      firstVisibleBtn.insertAdjacentElement('beforebegin', bell);
+      firstVisibleBtn.insertAdjacentElement('beforebegin', controls);
       position = 'before-first-visible-btn';
     } else {
-      container.prepend(bell);
+      container.prepend(controls);
       position = 'prepended';
     }
   }
-  // Mesure post-layout : prouve que la cloche est réellement AFFICHÉE (rect non
-  // nul), pas seulement présente dans le DOM — c'est ce qui a manqué pour
-  // diagnostiquer le cas « injectée mais invisible ».
+  // Mesure post-layout : prouve que le contrôle est réellement AFFICHÉ (rect non
+  // nul), pas seulement présent dans le DOM — c'est ce qui a manqué pour
+  // diagnostiquer le cas « injecté mais invisible ».
   requestAnimationFrame(() => {
-    const r = bell.getBoundingClientRect();
+    const r = controls.getBoundingClientRect();
     wlog(
-      'bell injected appId=' + appId +
+      'controls injected appId=' + appId +
       ' position=' + position +
       ' containerChildren=' + container.childElementCount +
       ' rect=' + Math.round(r.width) + 'x' + Math.round(r.height) +
       '@' + Math.round(r.x) + ',' + Math.round(r.y) +
-      ' visible=' + (bell.offsetParent !== null),
+      ' visible=' + (controls.offsetParent !== null),
     );
   });
 
-  // Reflect the current follow state (empty → green if already followed).
+  // Reflect the current state ([+] green if followed, bell green if notified).
   void (async () => {
-    setBellState(bell, await fetchIsFollowed(steamId, appId));
+    const state = await fetchFollowState(steamId, appId);
+    setControlsState(controls, state.followed, state.notified);
   })();
 }
 
@@ -324,7 +453,7 @@ export default async function WebkitMain(): Promise<void> {
   }
   // Boot marker: version + page. Si cette ligne n'apparaît pas dans le log Lua,
   // le webkit ne tourne pas sur cette page (vieux bundle / restart manquant).
-  wlog('v1.2.5-r2 boot on ' + window.location.pathname);
+  wlog('v1.3.0 boot on ' + window.location.pathname);
   // documentElement always exists; the observer re-injects on late/ SPA DOM.
   const observer = new MutationObserver(() => injectBell(steamId));
   observer.observe(document.documentElement, { childList: true, subtree: true });
