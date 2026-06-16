@@ -12,7 +12,7 @@
     "@sentry/browser": "^10.58.0",
     "@steambrew/api": "^5.5.3",
     "@steambrew/client": "^5.5.3",
-    "@steambrew/ttc": "^2.7.3",
+    "@steambrew/ttc": "^3.3.7",
     "@steambrew/webkit": "^5.5.3"
   },
   "devDependencies": {
