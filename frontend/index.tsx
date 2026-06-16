@@ -8,6 +8,20 @@ import {
   routerHook,
   toaster,
 } from '@steambrew/client';
+import * as Sentry from '@sentry/browser';
+
+// Monitoring d'erreurs du CODE NATIF du plugin (bouton NEWS, navigation, toasts,
+// heartbeat…). Le feed lui-même tourne dans une <iframe> et est déjà couvert par
+// le Sentry du SPA web (erreurs taguées `plugin-iframe`). DSN = clé PUBLIQUE.
+// ⚠️ Le contexte `webkit` (cloche sur la page store) a une CSP Steam stricte et
+// n'est PAS instrumenté ici. Voir SENTRY_SETUP.md §5.
+Sentry.init({
+  dsn: 'https://400d4de2dbd464b022bd5ca56fe77d8b@o4511158959931392.ingest.de.sentry.io/4511575843799120',
+  release: 'plugin@1.2.5',
+  tracesSampleRate: 0,
+  sendDefaultPii: false,
+});
+Sentry.setTag('surface', 'plugin-frontend');
 
 // Fires a native Steam toast. Logs NotificationStore readiness + outcome to the
 // Lua log so we can diagnose why a toast may not render.
