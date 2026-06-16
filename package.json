@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "@babel/preset-env": "^7.28.3",
-    "@babel/preset-react": "^7.27.1",
+    "@babel/preset-react": "^8.0.0",
     "@babel/traverse": "^7.28.3",
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
