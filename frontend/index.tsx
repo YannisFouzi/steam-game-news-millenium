@@ -8,20 +8,7 @@ import {
   routerHook,
   toaster,
 } from '@steambrew/client';
-import * as Sentry from '@sentry/browser';
-
-// Monitoring d'erreurs du CODE NATIF du plugin (bouton NEWS, navigation, toasts,
-// heartbeat…). Le feed lui-même tourne dans une <iframe> et est déjà couvert par
-// le Sentry du SPA web (erreurs taguées `plugin-iframe`). DSN = clé PUBLIQUE.
-// ⚠️ Le contexte `webkit` (cloche sur la page store) a une CSP Steam stricte et
-// n'est PAS instrumenté ici. Voir SENTRY_SETUP.md §5.
-Sentry.init({
-  dsn: 'https://400d4de2dbd464b022bd5ca56fe77d8b@o4511158959931392.ingest.de.sentry.io/4511575843799120',
-  release: 'plugin@1.2.5',
-  tracesSampleRate: 0,
-  sendDefaultPii: false,
-});
-Sentry.setTag('surface', 'plugin-frontend');
+import { reportGameNewsError } from './sentry';
 
 // Fires a native Steam toast. Logs NotificationStore readiness + outcome to the
 // Lua log so we can diagnose why a toast may not render.
@@ -43,6 +30,7 @@ function sendTestToast(): void {
     });
     navLog('sendTestToast: toaster.toast returned OK');
   } catch (error) {
+    reportGameNewsError(error);
     navLog('sendTestToast: toaster.toast threw ' + String(error));
   }
 }
@@ -95,7 +83,10 @@ function simulateNewsToast(): void {
         });
         navLog('simulateNewsToast: toasted "' + item.news.title + '"');
       })
-      .catch((err: unknown) => navLog('simulateNewsToast: ' + String(err)));
+      .catch((err: unknown) => {
+        reportGameNewsError(err);
+        navLog('simulateNewsToast: ' + String(err));
+      });
   });
 }
 
@@ -136,7 +127,10 @@ function simulateFollowPrompt(): void {
         );
         navLog('simulateFollowPrompt: toasted ' + target.name);
       })
-      .catch((err: unknown) => navLog('simulateFollowPrompt: ' + String(err)));
+      .catch((err: unknown) => {
+        reportGameNewsError(err);
+        navLog('simulateFollowPrompt: ' + String(err));
+      });
   });
 }
 
@@ -608,6 +602,7 @@ function openFeed(steamId: string): void {
     }
     navLog('openFeed: Navigation.Navigate unavailable, falling back to steam://openurl');
   } catch (e) {
+    reportGameNewsError(e);
     navLog('openFeed Navigation.Navigate error: ' + String(e));
   }
   // Last-resort fallback (only if the router API is missing): external open.
@@ -620,6 +615,7 @@ function openFeed(steamId: string): void {
       return;
     }
   } catch (e) {
+    reportGameNewsError(e);
     navLog('openFeed ExecuteSteamURL error: ' + String(e));
   }
 }
@@ -703,6 +699,7 @@ function openArticleNative(url: string): void {
     }
     ilog('openArticleNative: NavigateToSteamWeb unavailable, falling back');
   } catch (e) {
+    reportGameNewsError(e);
     ilog('openArticleNative NavigateToSteamWeb error: ' + String(e));
   }
   try {
@@ -712,6 +709,7 @@ function openArticleNative(url: string): void {
       navLog('openArticleNative: steam://openurl fallback ' + url);
     }
   } catch (e) {
+    reportGameNewsError(e);
     navLog('openArticleNative fallback error: ' + String(e));
   }
 }
@@ -1379,14 +1377,14 @@ function startNewsPolling(): void {
     window.setInterval(() => sendHeartbeat(steamId), HEARTBEAT_INTERVAL_MS);
 
     window.setTimeout(() => {
-      void pollNewsOnce(steamId);
-      void pollFollowPrompts(steamId);
+      void pollNewsOnce(steamId).catch(reportGameNewsError);
+      void pollFollowPrompts(steamId).catch(reportGameNewsError);
     }, 8000);
     window.setInterval(() => {
-      void pollNewsOnce(steamId);
-      void pollFollowPrompts(steamId);
+      void pollNewsOnce(steamId).catch(reportGameNewsError);
+      void pollFollowPrompts(steamId).catch(reportGameNewsError);
     }, NEWS_POLL_INTERVAL_MS);
-  });
+  }).catch(reportGameNewsError);
 }
 
 // Registers the plugin-owned /gamenews route once at load. Logs the runtime
@@ -1410,17 +1408,23 @@ function registerFeedRoute(): void {
     routerHook.addRoute(FEED_ROUTE, GameNewsFeedRoute);
     navLog('registerFeedRoute: route ' + FEED_ROUTE + ' registered');
   } catch (e) {
+    reportGameNewsError(e);
     navLog('registerFeedRoute: addRoute threw ' + String(e));
   }
 }
 
 export default definePlugin(() => {
-  registerFeedRoute();
-  initHeaderInjection();
-  startNewsPolling();
-  return {
-    title: 'Game News',
-    icon: PluginIcon,
-    content: <GameNewsPanel />,
-  };
+  try {
+    registerFeedRoute();
+    initHeaderInjection();
+    startNewsPolling();
+    return {
+      title: 'Game News',
+      icon: PluginIcon,
+      content: <GameNewsPanel />,
+    };
+  } catch (error) {
+    reportGameNewsError(error);
+    throw error;
+  }
 });
