@@ -87,7 +87,7 @@ function simulateNewsToast(): void {
         reportGameNewsError(err);
         navLog('simulateNewsToast: ' + String(err));
       });
-  });
+  }).catch(reportGameNewsError);
 }
 
 // Toasts a follow-prompt for the first unfollowed wishlist game — tests the
@@ -131,7 +131,7 @@ function simulateFollowPrompt(): void {
         reportGameNewsError(err);
         navLog('simulateFollowPrompt: ' + String(err));
       });
-  });
+  }).catch(reportGameNewsError);
 }
 
 // Steam injects React as window.SP_REACT; the tsconfig jsxFactory points to it.
@@ -265,7 +265,7 @@ function followViaBackend(
     `&logoUrl=${encodeURIComponent(logoUrl)}`;
   void fetchBackend({ path: `/web/follow${q}` }).then((res) => {
     navLog('follow result: ' + (res.ok ? `HTTP ${res.status}` : (res.error ?? '?')));
-  });
+  }).catch(reportGameNewsError);
 }
 
 // Shows a "nouveau jeu détecté → clic pour suivre" toast. On click: follow the
@@ -370,7 +370,7 @@ function useSteamId(): SteamIdPayload {
     let cancelled = false;
     void getSteamId().then((next) => {
       if (!cancelled) setState(next);
-    });
+    }).catch(reportGameNewsError);
     return () => {
       cancelled = true;
     };
@@ -537,7 +537,7 @@ function GameNewsFeedRoute() {
         if (s) {
           setSecret(s);
         }
-      });
+      }).catch(reportGameNewsError);
     }
   }, [secret]);
   const url = steam.steamId
@@ -1316,7 +1316,7 @@ function sendHeartbeat(steamId: string): void {
     if (!res.ok || res.status !== 200) {
       navLog('heartbeat failed: ' + (res.error ?? res.status));
     }
-  });
+  }).catch(reportGameNewsError);
 }
 
 // Provisions the user's Game News account on first launch (idempotent). This is
@@ -1416,7 +1416,7 @@ function registerFeedRoute(): void {
 export default definePlugin(() => {
   try {
     registerFeedRoute();
-    initHeaderInjection();
+    void initHeaderInjection().catch(reportGameNewsError);
     startNewsPolling();
     return {
       title: 'Game News',
