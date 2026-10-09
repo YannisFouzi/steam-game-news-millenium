@@ -3,10 +3,10 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, fix/isolate-sentry-shared-steam-context]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -36,3 +36,16 @@ jobs:
       # surface — le build est la garde minimale contre une regression.
       - name: Build plugin
         run: npm run build
+
+      # One-time generated-bundle sync for this PR only; remove this step after
+      # the compiled artifact has been committed. No deployment or release.
+      - name: Commit generated bundle for Sentry fix
+        if: github.event_name == 'push' && github.ref_name == 'fix/isolate-sentry-shared-steam-context'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f .millennium/Dist/index.js .millennium/Dist/webkit.js
+          if ! git diff --cached --quiet; then
+            git commit -m 'build: regenerate Millennium bundle after Sentry isolation'
+            git push origin HEAD:refs/heads/fix/isolate-sentry-shared-steam-context
+          fi
